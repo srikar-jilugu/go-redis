@@ -830,6 +830,7 @@ func (c *clusterStateHolder) Get(ctx context.Context) (*clusterState, error) {
 
 	state := v.(*clusterState)
 	if time.Since(state.createdAt) > 10*time.Second {
+		internal.Logger.Printf(ctx, "[GetClusterState] state older than 10sec, hence reloading the cluster state")
 		c.LazyReload()
 	}
 	return state, nil
@@ -950,6 +951,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
+				internal.Logger.Printf(ctx, "[Process] readonly error occured for %v with node(addr):%s, hence reloading the cluster state", cmd.Args(), node.Client.opt.Addr)
 				c.state.LazyReload()
 			}
 			node = nil
@@ -967,6 +969,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
+			internal.Logger.Printf(ctx, "[Process] moved error(moved:%t, ask:%t) from addr:%s to addr:%s occured for %v hence reloading the cluster state", moved, ask, node.Client.opt.Addr, addr, cmd.Args())
 			c.state.LazyReload()
 
 			var err error
@@ -1154,6 +1157,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 
 func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 	if c.opt.ClusterSlots != nil {
+		internal.Logger.Printf(ctx, "[Stateload] ClusterSlots cmd of ClusterClient is executed")
 		slots, err := c.opt.ClusterSlots(ctx)
 		if err != nil {
 			return nil, err
@@ -1179,6 +1183,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 			continue
 		}
 
+		internal.Logger.Printf(ctx, "[Stateload] ClusterSlots cmd of nodeClient is executed through node with addr: %s", addr)
 		slots, err := node.Client.ClusterSlots(ctx).Result()
 		if err != nil {
 			if firstErr == nil {
@@ -1388,6 +1393,7 @@ func (c *ClusterClient) checkMovedErr(
 	}
 
 	if moved {
+		internal.Logger.Printf(ctx, "[checkMovedErr] moved error occured for %v, hence reloading the cluster state", cmd.Args())
 		c.state.LazyReload()
 		failedCmds.Add(node, cmd)
 		return true
@@ -1580,6 +1586,7 @@ func (c *ClusterClient) cmdsMoved(
 	}
 
 	if moved {
+		internal.Logger.Printf(ctx, "[txPipelineReadQueued] moved error occured, hence reloading the cluster state")
 		c.state.LazyReload()
 		for _, cmd := range cmds {
 			failedCmds.Add(node, cmd)
@@ -1638,6 +1645,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		if isReadOnly := isReadOnlyError(err); isReadOnly || err == pool.ErrClosed {
 			if isReadOnly {
+				internal.Logger.Printf(ctx, "[Watch] readonly error occured for keys:%v hence reloading the cluster state", keys)
 				c.state.LazyReload()
 			}
 			node, err = c.slotMasterNode(ctx, slot)
