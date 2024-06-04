@@ -639,7 +639,6 @@ func NewClient(opt *Options) *Client {
 	}
 	c.init()
 	c.connPool = newConnPool(opt, c.dialHook)
-
 	return &c
 }
 
