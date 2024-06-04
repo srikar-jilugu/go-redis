@@ -695,6 +695,7 @@ func isLoopback(host string) bool {
 }
 
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
+	internal.Logger.Printf(context.Background(), "[slotMasterNode] selecting master node for slot:%d", slot)
 	nodes := c.slotNodes(slot)
 	if len(nodes) > 0 {
 		return nodes[0], nil
@@ -730,31 +731,43 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 }
 
 func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
+
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
+		internal.Logger.Printf(context.Background(), "[slotClosestNode] couldn't find any node for the slot:%d, hence selecting a random node", slot)
 		return c.nodes.Random()
 	}
 
 	var node *clusterNode
+
+	nodeLatencies := []int64{}
 	for _, n := range nodes {
 		if n.Failing() {
 			continue
 		}
+		nodeLatencies = append(nodeLatencies, n.Latency().Microseconds())
 		if node == nil || n.Latency() < node.Latency() {
 			node = n
 		}
 	}
+	internal.Logger.Printf(context.Background(), "[slotClosestNode] latencies of all the nodes(non failing):%v for slot:%d", nodeLatencies, slot)
+
 	if node != nil {
+		internal.Logger.Printf(context.Background(), "[slotClosestNode] selected node based on latency for slot:%d is %s(addr) with latency:%d", slot, node.Client.opt.Addr, node.Latency().Microseconds())
 		return node, nil
 	}
 
 	// If all nodes are failing - return random node
+	internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing for the slot:%d, hence selecting a random node", slot)
 	return c.nodes.Random()
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
+
+	internal.Logger.Printf(context.Background(), "[slotRandomNode] selecting node randomly for slot:%d, as RouteRandomly opt is enabled", slot)
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
+		internal.Logger.Printf(context.Background(), "[slotRandomNode] no node for slot:%d, hence selecting a random node", slot)
 		return c.nodes.Random()
 	}
 	if len(nodes) == 1 {
@@ -763,9 +776,17 @@ func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
 	randomNodes := rand.Perm(len(nodes))
 	for _, idx := range randomNodes {
 		if node := nodes[idx]; !node.Failing() {
+			if node != nil {
+				internal.Logger.Printf(context.Background(), "[slotRandomNode] selecting node randomly for slot:%d, with addr:%s", slot, node.Client.opt.Addr)
+			}
 			return node, nil
 		}
 	}
+
+	if nodes[randomNodes[0]] != nil {
+		internal.Logger.Printf(context.Background(), "[slotRandomNode] all nodes are failing for the slot:%d, selected random node:%s", slot, nodes[randomNodes[0]].Client.opt.Addr)
+	}
+
 	return nodes[randomNodes[0]], nil
 }
 
@@ -1833,9 +1854,11 @@ func (c *ClusterClient) cmdNode(
 
 func (c *ClusterClient) slotReadOnlyNode(state *clusterState, slot int) (*clusterNode, error) {
 	if c.opt.RouteByLatency {
+		internal.Logger.Printf(context.Background(), "[slotReadOnlyNode] choosing the closest node to route cmd for slot%d", slot)
 		return state.slotClosestNode(slot)
 	}
 	if c.opt.RouteRandomly {
+		internal.Logger.Printf(context.Background(), "[slotReadOnlyNode] choosing a random node to route cmd for slot%d", slot)
 		return state.slotRandomNode(slot)
 	}
 	return state.slotSlaveNode(slot)
