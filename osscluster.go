@@ -950,7 +950,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 	tries := 0
 
-	defer internal.Logger.Printf(ctx, "[process] no.of.attempts processing the cmd:%v are %d", cmd.Args(), tries)
+	defer func() {
+		internal.Logger.Printf(ctx, "[process] no.of.attempts processing the cmd:%v are %d", cmd.Args(), tries)
+	}()
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		tries++
 		if attempt > 0 {
@@ -1271,7 +1273,9 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 	}
 
 	tries := 0
-	defer internal.Logger.Printf(ctx, "[processPipeline] no.of.attempts for processing cmds:%v are %d", getCmdArgs(cmds), tries)
+	defer func() {
+		internal.Logger.Printf(ctx, "[processPipeline] no.of.attempts for processing cmds:%v are %d", getCmdArgs(cmds), tries)
+	}()
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		tries++
 		if attempt > 0 {
