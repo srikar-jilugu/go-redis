@@ -751,13 +751,20 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 	internal.Logger.Printf(context.Background(), "[slotClosestNode] latencies of all the nodes(non failing):%v for slot:%d", nodeLatencies, slot)
 
 	if node != nil {
-		internal.Logger.Printf(context.Background(), "[slotClosestNode] selected node based on latency for slot:%d is %s(addr) with latency:%d", slot, node.Client.opt.Addr, node.Latency().Microseconds())
+		internal.Logger.Printf(context.Background(), "[slotClosestNode] selected node based on latency for slot:%d is %s(addr) with latency:%d", slot, node.String(), node.Latency().Microseconds())
 		return node, nil
 	}
 
-	// If all nodes are failing - return random node
+	// If all nodes are failing - return random node from the nodes corresponding to the slot
 	internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing for the slot:%d, hence selecting a random node", slot)
-	return c.nodes.Random()
+
+	randomNodes := rand.Perm(len(nodes))
+
+	if nodes[randomNodes[0]] != nil {
+		internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing for the slot:%d, selected random node:%s", slot, nodes[randomNodes[0]].String())
+	}
+
+	return nodes[randomNodes[0]], nil
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
@@ -775,14 +782,14 @@ func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
 	for _, idx := range randomNodes {
 		if node := nodes[idx]; !node.Failing() {
 			if node != nil {
-				internal.Logger.Printf(context.Background(), "[slotRandomNode] selecting node randomly for slot:%d, with addr:%s", slot, node.Client.opt.Addr)
+				internal.Logger.Printf(context.Background(), "[slotRandomNode] selecting node randomly for slot:%d, with addr:%s", slot, node.String())
 			}
 			return node, nil
 		}
 	}
 
 	if nodes[randomNodes[0]] != nil {
-		internal.Logger.Printf(context.Background(), "[slotRandomNode] all nodes are failing for the slot:%d, selected random node:%s", slot, nodes[randomNodes[0]].Client.opt.Addr)
+		internal.Logger.Printf(context.Background(), "[slotRandomNode] all nodes are failing for the slot:%d, selected random node:%s", slot, nodes[randomNodes[0]].String())
 	}
 
 	return nodes[randomNodes[0]], nil
@@ -938,7 +945,12 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var node *clusterNode
 	var ask bool
 	var lastErr error
+
+	tries := 0
+
+	defer internal.Logger.Printf(ctx, "[process] no.of.attempts processing the cmd:%v are %d", cmd.Args(), tries)
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		tries++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
@@ -970,7 +982,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
-				internal.Logger.Printf(ctx, "[Process] readonly error occured for %v with node(addr):%s, hence reloading the cluster state", cmd.Args(), node.Client.opt.Addr)
+				internal.Logger.Printf(ctx, "[Process] readonly error occured for %v with node(addr):%s, hence reloading the cluster state", cmd.Args(), node.String())
 				c.state.LazyReload()
 			}
 			node = nil
@@ -979,6 +991,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		// If slave is loading - pick another node.
 		if c.opt.ReadOnly && isLoadingError(lastErr) {
+			internal.Logger.Printf(ctx, "[Process][MarkAsFailing] loading error occured:%s for node(addr):%s, hence marking as failed", lastErr.Error(), node.String())
 			node.MarkAsFailing()
 			node = nil
 			continue
@@ -988,7 +1001,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
-			internal.Logger.Printf(ctx, "[Process] moved error(moved:%t, ask:%t) from addr:%s to addr:%s occured for %v hence reloading the cluster state", moved, ask, node.Client.opt.Addr, addr, cmd.Args())
+			internal.Logger.Printf(ctx, "[Process] moved error(moved:%t, ask:%t) from addr:%s to addr:%s occured for %v hence reloading the cluster state", moved, ask, node.String(), addr, cmd.Args())
 			c.state.LazyReload()
 
 			var err error
@@ -1006,6 +1019,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			}
 
 			// Second try another node.
+			internal.Logger.Printf(ctx, "[Process][MarkAsFailing] more than 1 attempt for node:%s, hence marking as failed", node.String())
 			node.MarkAsFailing()
 			node = nil
 			continue
@@ -1211,7 +1225,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 			continue
 		}
 
-		return newClusterState(c.nodes, slots, node.Client.opt.Addr)
+		return newClusterState(c.nodes, slots, node.String())
 	}
 
 	/*
@@ -1246,8 +1260,18 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 		setCmdsErr(cmds, err)
 		return err
 	}
+	getCmdArgs := func(cmds []Cmder) [][]interface{} {
+		var cmdArgs [][]interface{}
+		for _, cmd := range cmds {
+			cmdArgs = append(cmdArgs, cmd.Args())
+		}
+		return cmdArgs
+	}
 
+	tries := 0
+	defer internal.Logger.Printf(ctx, "[processPipeline] no.of.attempts for processing cmds:%v are %d", getCmdArgs(cmds), tries)
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		tries++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
@@ -1374,6 +1398,7 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 
 		if c.opt.ReadOnly {
+			internal.Logger.Printf(ctx, "[pipelineReadCmds][MarkAsFailing] returned error is due to a problem in node:%s", node.String())
 			node.MarkAsFailing()
 		}
 
