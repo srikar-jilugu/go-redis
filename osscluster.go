@@ -1408,7 +1408,7 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 
 		if c.opt.ReadOnly && isBadConn(err, false, node.Client.getAddr()) {
-			internal.Logger.Printf(ctx, "[pipelineReadCmds][MarkAsFailing] returned error is due to a problem in node:%s", node.String())
+			internal.Logger.Printf(ctx, "[pipelineReadCmds][MarkAsFailing] returned error is due to a problem in node:%s, err:%s", node.String(), err.Error())
 			node.MarkAsFailing()
 		}
 
