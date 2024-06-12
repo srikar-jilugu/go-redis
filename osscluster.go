@@ -742,9 +742,7 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 
 	nodeLatencies := []int64{}
 	for _, n := range nodes {
-		if n.Failing() {
-			continue
-		}
+		// we are considering all nodes regardless if they are failing.
 		nodeLatencies = append(nodeLatencies, n.Latency().Microseconds())
 		if node == nil || n.Latency() < node.Latency() {
 			node = n
@@ -757,13 +755,14 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		return node, nil
 	}
 
+	// This flow shouldn't be possible, as node cannot be nil.
 	// If all nodes are failing - return random node from the nodes corresponding to the slot
-	internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing for the slot:%d, hence selecting a random node", slot)
+	internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing(node==nil) for the slot:%d, hence selecting a random node", slot)
 
 	randomNodes := rand.Perm(len(nodes))
 
 	if nodes[randomNodes[0]] != nil {
-		internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing for the slot:%d, selected random node:%s", slot, nodes[randomNodes[0]].String())
+		internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing(node==nil) for the slot:%d, selected random node:%s", slot, nodes[randomNodes[0]].String())
 	}
 
 	return nodes[randomNodes[0]], nil
@@ -1351,6 +1350,7 @@ func (c *ClusterClient) processPipelineNode(
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
+			internal.Logger.Printf(ctx, "[processPipelineNode][MarkAsFailing] marking node:%s as failed, as there's an err while getting conn, err:%s", node.String(), err.Error())
 			node.MarkAsFailing()
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
@@ -1374,6 +1374,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		if isBadConn(err, false, node.Client.getAddr()) {
+			internal.Logger.Printf(ctx, "[processPipelineNodeConn][MarkAsFailing] marking node:%s as failed due to bad conn, err:%s", node.String(), err.Error())
 			node.MarkAsFailing()
 		}
 		if shouldRetry(err, true) {
