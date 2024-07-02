@@ -75,6 +75,9 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
+func CmdFirstKeyPos(cmd Cmder) int {
+	return cmdFirstKeyPos(cmd)
+}
 func cmdFirstKeyPos(cmd Cmder) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
@@ -157,6 +160,10 @@ func (cmd *baseCmd) FullName() string {
 
 func (cmd *baseCmd) Args() []interface{} {
 	return cmd.args
+}
+
+func GetArgFromPos(cmd Cmder, pos int) string {
+	return cmd.stringArg(pos)
 }
 
 func (cmd *baseCmd) stringArg(pos int) string {
