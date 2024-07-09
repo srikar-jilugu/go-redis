@@ -695,6 +695,7 @@ func isLoopback(host string) bool {
 }
 
 func (c *clusterState) slotMasterNode(slot int) (*clusterNode, error) {
+	internal.Logger.Printf(context.Background(), "[slotMasterNode] selecting master node for slot:%d", slot)
 	nodes := c.slotNodes(slot)
 	if len(nodes) > 0 {
 		return nodes[0], nil
@@ -730,31 +731,43 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 }
 
 func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
+
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
+		internal.Logger.Printf(context.Background(), "[slotClosestNode] couldn't find any node for the slot:%d, hence selecting a random node", slot)
 		return c.nodes.Random()
 	}
 
 	var node *clusterNode
+
+	nodeLatencies := []int64{}
 	for _, n := range nodes {
 		if n.Failing() {
 			continue
 		}
+		nodeLatencies = append(nodeLatencies, n.Latency().Microseconds())
 		if node == nil || n.Latency() < node.Latency() {
 			node = n
 		}
 	}
+	internal.Logger.Printf(context.Background(), "[slotClosestNode] latencies of all the nodes(non failing):%v for slot:%d", nodeLatencies, slot)
+
 	if node != nil {
+		internal.Logger.Printf(context.Background(), "[slotClosestNode] selected node based on latency for slot:%d is %s(addr) with latency:%d", slot, node.Client.opt.Addr, node.Latency().Microseconds())
 		return node, nil
 	}
 
 	// If all nodes are failing - return random node
+	internal.Logger.Printf(context.Background(), "[slotClosestNode] all nodes are failing for the slot:%d, hence selecting a random node", slot)
 	return c.nodes.Random()
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
+
+	internal.Logger.Printf(context.Background(), "[slotRandomNode] selecting node randomly for slot:%d, as RouteRandomly opt is enabled", slot)
 	nodes := c.slotNodes(slot)
 	if len(nodes) == 0 {
+		internal.Logger.Printf(context.Background(), "[slotRandomNode] no node for slot:%d, hence selecting a random node", slot)
 		return c.nodes.Random()
 	}
 	if len(nodes) == 1 {
@@ -763,9 +776,17 @@ func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
 	randomNodes := rand.Perm(len(nodes))
 	for _, idx := range randomNodes {
 		if node := nodes[idx]; !node.Failing() {
+			if node != nil {
+				internal.Logger.Printf(context.Background(), "[slotRandomNode] selecting node randomly for slot:%d, with addr:%s", slot, node.Client.opt.Addr)
+			}
 			return node, nil
 		}
 	}
+
+	if nodes[randomNodes[0]] != nil {
+		internal.Logger.Printf(context.Background(), "[slotRandomNode] all nodes are failing for the slot:%d, selected random node:%s", slot, nodes[randomNodes[0]].Client.opt.Addr)
+	}
+
 	return nodes[randomNodes[0]], nil
 }
 
@@ -830,6 +851,7 @@ func (c *clusterStateHolder) Get(ctx context.Context) (*clusterState, error) {
 
 	state := v.(*clusterState)
 	if time.Since(state.createdAt) > 10*time.Second {
+		internal.Logger.Printf(ctx, "[GetClusterState] state older than 10sec, hence reloading the cluster state")
 		c.LazyReload()
 	}
 	return state, nil
@@ -950,6 +972,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
+				internal.Logger.Printf(ctx, "[Process] readonly error occured for %v with node(addr):%s, hence reloading the cluster state", cmd.Args(), node.Client.opt.Addr)
 				c.state.LazyReload()
 			}
 			node = nil
@@ -967,6 +990,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
+			internal.Logger.Printf(ctx, "[Process] moved error(moved:%t, ask:%t) from addr:%s to addr:%s occured for %v hence reloading the cluster state", moved, ask, node.Client.opt.Addr, addr, cmd.Args())
 			c.state.LazyReload()
 
 			var err error
@@ -1154,6 +1178,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 
 func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 	if c.opt.ClusterSlots != nil {
+		internal.Logger.Printf(ctx, "[Stateload] ClusterSlots cmd of ClusterClient is executed")
 		slots, err := c.opt.ClusterSlots(ctx)
 		if err != nil {
 			return nil, err
@@ -1179,6 +1204,7 @@ func (c *ClusterClient) loadState(ctx context.Context) (*clusterState, error) {
 			continue
 		}
 
+		internal.Logger.Printf(ctx, "[Stateload] ClusterSlots cmd of nodeClient is executed through node with addr: %s", addr)
 		slots, err := node.Client.ClusterSlots(ctx).Result()
 		if err != nil {
 			if firstErr == nil {
@@ -1388,6 +1414,7 @@ func (c *ClusterClient) checkMovedErr(
 	}
 
 	if moved {
+		internal.Logger.Printf(ctx, "[checkMovedErr] moved error occured for %v, hence reloading the cluster state", cmd.Args())
 		c.state.LazyReload()
 		failedCmds.Add(node, cmd)
 		return true
@@ -1580,6 +1607,7 @@ func (c *ClusterClient) cmdsMoved(
 	}
 
 	if moved {
+		internal.Logger.Printf(ctx, "[txPipelineReadQueued] moved error occured, hence reloading the cluster state")
 		c.state.LazyReload()
 		for _, cmd := range cmds {
 			failedCmds.Add(node, cmd)
@@ -1638,6 +1666,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		if isReadOnly := isReadOnlyError(err); isReadOnly || err == pool.ErrClosed {
 			if isReadOnly {
+				internal.Logger.Printf(ctx, "[Watch] readonly error occured for keys:%v hence reloading the cluster state", keys)
 				c.state.LazyReload()
 			}
 			node, err = c.slotMasterNode(ctx, slot)
@@ -1825,9 +1854,11 @@ func (c *ClusterClient) cmdNode(
 
 func (c *ClusterClient) slotReadOnlyNode(state *clusterState, slot int) (*clusterNode, error) {
 	if c.opt.RouteByLatency {
+		internal.Logger.Printf(context.Background(), "[slotReadOnlyNode] choosing the closest node to route cmd for slot%d", slot)
 		return state.slotClosestNode(slot)
 	}
 	if c.opt.RouteRandomly {
+		internal.Logger.Printf(context.Background(), "[slotReadOnlyNode] choosing a random node to route cmd for slot%d", slot)
 		return state.slotRandomNode(slot)
 	}
 	return state.slotSlaveNode(slot)
