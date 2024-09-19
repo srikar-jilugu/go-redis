@@ -760,12 +760,18 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 
 	// pick the healthly node with the lowest latency
 	if !allNodesFailing && closestNonFailingNode != nil {
+		if closestNonFailingNode.Client != nil {
+			internal.Logger.Printf(context.TODO(), "redis: picking the healthly node with the lowest latency: %s", closestNonFailingNode.Client.getAddr())
+		}
+
 		return closestNonFailingNode, nil
 	}
 
 	// if all nodes are failing, we will pick the temporarily failing node with lowest latency
 	if minLatency < maximumNodeLatency && closestNode != nil {
-		internal.Logger.Printf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency")
+		if closestNode.Client != nil {
+			internal.Logger.Printf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency: %s", closestNode.Client.getAddr())
+		}
 		return closestNode, nil
 	}
 
@@ -941,9 +947,14 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 	var moved bool
 	var ask bool
 	var lastErr error
+	var noOfTries int
+	defer func() {
+		internal.Logger.Printf(ctx, "[process] no.of.attempts processing the cmd:%v are %d", cmd.FullName(), noOfTries)
+	}()
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		// MOVED and ASK responses are not transient errors that require retry delay; they
 		// should be attempted immediately.
+		noOfTries++
 		if attempt > 0 && !moved && !ask {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				return err
@@ -975,6 +986,10 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 		if isReadOnly := isReadOnlyError(lastErr); isReadOnly || lastErr == pool.ErrClosed {
 			if isReadOnly {
+				if node.Client != nil && node.Client.baseClient != nil && node.Client.baseClient.opt != nil {
+					internal.Logger.Printf(ctx, "[process] read-only error occured, hence reloading the cluster state, node: %s", node.Client.baseClient.opt.Addr)
+				}
+
 				c.state.LazyReload()
 			}
 			node = nil
@@ -984,6 +999,9 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		// If slave is loading - pick another node.
 		if c.opt.ReadOnly && isLoadingError(lastErr) {
 			node.MarkAsFailing()
+			if node.Client != nil && node.Client.baseClient != nil && node.Client.baseClient.opt != nil {
+				internal.Logger.Printf(ctx, "[process] slave loading error, node: %s is marked as failing", node.Client.baseClient.opt.Addr)
+			}
 			node = nil
 			continue
 		}
@@ -991,6 +1009,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		var addr string
 		moved, ask, addr = isMovedError(lastErr)
 		if moved || ask {
+			internal.Logger.Printf(ctx, "[process] moved/ask to addr:%s error occured, hence reloading the cluster state", addr)
 			c.state.LazyReload()
 
 			var err error
@@ -1009,6 +1028,10 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 			// Second try another node.
 			node.MarkAsFailing()
+			if node.Client != nil {
+				internal.Logger.Printf(ctx, "[process] failed second retry with err:%s of cmd:%s to node: %s is marked as failing", lastErr, cmd.FullName(), node.Client.getAddr())
+			}
+
 			node = nil
 			continue
 		}
@@ -1322,6 +1345,9 @@ func (c *ClusterClient) processPipelineNode(
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
 			node.MarkAsFailing()
+			if node.Client != nil {
+				internal.Logger.Printf(ctx, "[processPipelineNode] failed to get connection with err:%s for node:%s, hence marked as failing", err, node.Client.getAddr())
+			}
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
 			return err
@@ -1345,6 +1371,9 @@ func (c *ClusterClient) processPipelineNodeConn(
 	}); err != nil {
 		if isBadConn(err, false, node.Client.getAddr()) {
 			node.MarkAsFailing()
+			if node.Client != nil {
+				internal.Logger.Printf(ctx, "[processPipelineNodeConn] failed to write commands with err:%s for node:%s, hence marked as failing", err, node.Client.getAddr())
+			}
 		}
 		if shouldRetry(err, true) {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
@@ -1379,6 +1408,7 @@ func (c *ClusterClient) pipelineReadCmds(
 
 		if c.opt.ReadOnly && isBadConn(err, false, node.Client.getAddr()) {
 			node.MarkAsFailing()
+			internal.Logger.Printf(ctx, "[pipelineReadCmds] failed to read reply with err:%s for node:%s, hence marked as failing", err, node.Client.getAddr())
 		}
 
 		if !isRedisError(err) {
@@ -1412,6 +1442,7 @@ func (c *ClusterClient) checkMovedErr(
 	}
 
 	if moved {
+		internal.Logger.Printf(ctx, "[checkMovedErr] moved error occured for %s, hence reloading the cluster state", cmd.FullName())
 		c.state.LazyReload()
 		failedCmds.Add(node, cmd)
 		return true
@@ -1546,6 +1577,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 
 			moved, ask, addr := isMovedError(err)
 			if moved || ask {
+				internal.Logger.Printf(ctx, "[processTxPipelineNodeConn] moved/ask error occured")
 				return c.cmdsMoved(ctx, trimmedCmds, moved, ask, addr, failedCmds)
 			}
 
@@ -1604,6 +1636,7 @@ func (c *ClusterClient) cmdsMoved(
 	}
 
 	if moved {
+		internal.Logger.Printf(ctx, "[cmdsMoved] moved error occured, hence reloading the cluster state")
 		c.state.LazyReload()
 		for _, cmd := range cmds {
 			failedCmds.Add(node, cmd)
@@ -1653,6 +1686,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		moved, ask, addr := isMovedError(err)
 		if moved || ask {
+			internal.Logger.Printf(ctx, "[Watch] moved/ask error occured, hence reloading the cluster state")
 			node, err = c.nodes.GetOrCreate(addr)
 			if err != nil {
 				return err
@@ -1662,6 +1696,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 
 		if isReadOnly := isReadOnlyError(err); isReadOnly || err == pool.ErrClosed {
 			if isReadOnly {
+				internal.Logger.Printf(ctx, "[Watch] read-only error occured, hence reloading the cluster state")
 				c.state.LazyReload()
 			}
 			node, err = c.slotMasterNode(ctx, slot)
