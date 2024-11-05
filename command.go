@@ -98,6 +98,10 @@ func cmdFirstKeyPos(cmd Cmder) int {
 	return 1
 }
 
+func CmdFirstKeyPos(cmd Cmder) int {
+	return cmdFirstKeyPos(cmd)
+}
+
 func cmdString(cmd Cmder, val interface{}) string {
 	b := make([]byte, 0, 64)
 
